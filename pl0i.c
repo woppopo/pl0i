@@ -130,6 +130,12 @@ Stack stack_new(void)
 	return stack;
 }
 
+void stack_free(Stack *stack)
+{
+	free(stack->data);
+	stack->data = NULL;
+}
+
 void stack_allocate(Stack *stack, size_t size)
 {
 	stack->size += size;
@@ -441,6 +447,8 @@ void run(Op *ops, size_t len)
 		}
 		}
 	}
+
+	stack_free(&stack);
 }
 
 size_t count_lines(FILE *fp)

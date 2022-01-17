@@ -1,3 +1,3 @@
 # pl0i
 
-PL0 interpreter
+PL/0 interpreter
