@@ -61,47 +61,47 @@ Op parse_op(char *line)
 	sscanf(line_without_whitespace, "(%[^,],%d,%d)", op_name, &op.opr1, &op.opr2);
 	free(line_without_whitespace);
 
-	if (strcmp(op_name, "LOD") == 0)
+	if (strcmp(op_name, "LOD") == 0 || strcmp(op_name, "lod") == 0)
 	{
 		op.kind = Op_Load;
 	}
-	else if (strcmp(op_name, "LIT") == 0)
+	else if (strcmp(op_name, "LIT") == 0 || strcmp(op_name, "lit") == 0)
 	{
 		op.kind = Op_Literal;
 	}
-	else if (strcmp(op_name, "STO") == 0)
+	else if (strcmp(op_name, "STO") == 0 || strcmp(op_name, "sto") == 0)
 	{
 		op.kind = Op_Store;
 	}
-	else if (strcmp(op_name, "OPR") == 0)
+	else if (strcmp(op_name, "OPR") == 0 || strcmp(op_name, "opr") == 0)
 	{
 		op.kind = Op_Operate;
 	}
-	else if (strcmp(op_name, "INT") == 0)
+	else if (strcmp(op_name, "INT") == 0 || strcmp(op_name, "int") == 0)
 	{
 		op.kind = Op_Allocate;
 	}
-	else if (strcmp(op_name, "JMP") == 0)
+	else if (strcmp(op_name, "JMP") == 0 || strcmp(op_name, "jmp") == 0)
 	{
 		op.kind = Op_Jump;
 	}
-	else if (strcmp(op_name, "JPC") == 0)
+	else if (strcmp(op_name, "JPC") == 0 || strcmp(op_name, "jpc") == 0)
 	{
 		op.kind = Op_JumpZero;
 	}
-	else if (strcmp(op_name, "CAL") == 0)
+	else if (strcmp(op_name, "CAL") == 0 || strcmp(op_name, "cal") == 0)
 	{
 		op.kind = Op_Call;
 	}
-	else if (strcmp(op_name, "CSP") == 0)
+	else if (strcmp(op_name, "CSP") == 0 || strcmp(op_name, "csp") == 0)
 	{
 		op.kind = Op_Intrinsic;
 	}
-	else if (strcmp(op_name, "LAB") == 0)
+	else if (strcmp(op_name, "LAB") == 0 || strcmp(op_name, "lab") == 0)
 	{
 		op.kind = Op_Label;
 	}
-	else if (strcmp(op_name, "RET") == 0)
+	else if (strcmp(op_name, "RET") == 0 || strcmp(op_name, "ret") == 0)
 	{
 		op.kind = Op_Return;
 	}
@@ -138,24 +138,36 @@ void stack_free(Stack *stack)
 
 void stack_allocate(Stack *stack, size_t size)
 {
+	stack->top += size;
 	stack->size += size;
 	stack->data = (int *)realloc(stack->data, stack->size * sizeof(int));
 }
 
 int stack_get(Stack *stack, size_t at)
 {
+	if (at > stack->top)
+	{
+		fprintf(stderr, "Invalid memory address: %lu\n", at);
+		exit(1);
+	}
+
 	return stack->data[at];
 }
 
 void stack_set(Stack *stack, size_t at, int value)
 {
+	if (at > stack->top)
+	{
+		fprintf(stderr, "Invalid memory address: %lu\n", at);
+		exit(1);
+	}
+
 	stack->data[at] = value;
 }
 
 void stack_push(Stack *stack, int value)
 {
 	stack_allocate(stack, 1);
-	stack->top++;
 	stack->data[stack->top - 1] = value;
 }
 
@@ -186,7 +198,6 @@ Record get_record(Stack *stack, size_t base_ptr)
 size_t push_record(Stack *stack, Record record)
 {
 	size_t base = stack->top;
-	stack_allocate(stack, 3);
 	stack_push(stack, (int)record.static_link);
 	stack_push(stack, (int)record.dynamic_link);
 	stack_push(stack, (int)record.return_address);
@@ -216,7 +227,8 @@ size_t base(Stack *stack, size_t base_ptr, size_t level_diff)
 
 size_t value_at(Stack *stack, size_t base_ptr, size_t level_diff, int offset)
 {
-	return (size_t)((int)base(stack, base_ptr, level_diff) + offset);
+	size_t base_addr = base(stack, base_ptr, level_diff);
+	return (size_t)((int)base_addr + offset);
 }
 
 void run(Op *ops, size_t len)
@@ -363,7 +375,13 @@ void run(Op *ops, size_t len)
 			break;
 		case Op_Allocate:
 		{
-			stack_allocate(&stack, (size_t)op.opr2);
+			// compiler may allocate 3 for the stack frame, but it's not necessary.
+			if (op.opr2 < 3)
+			{
+				fprintf(stderr, "Allocate opr2 must be >= 3\n");
+				exit(1);
+			}
+			stack_allocate(&stack, (size_t)op.opr2 - 3);
 			pc++;
 			break;
 		}
