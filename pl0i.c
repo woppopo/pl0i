@@ -375,13 +375,7 @@ void run(Op *ops, size_t len)
 			break;
 		case Op_Allocate:
 		{
-			// compiler may allocate 3 for the stack frame, but it's not necessary.
-			if (op.opr2 < 3)
-			{
-				fprintf(stderr, "Allocate opr2 must be >= 3\n");
-				exit(1);
-			}
-			stack_allocate(&stack, (size_t)op.opr2 - 3);
+			stack_allocate(&stack, (size_t)op.opr2);
 			pc++;
 			break;
 		}
