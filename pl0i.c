@@ -26,12 +26,32 @@ typedef struct
 	int opr2;
 } Op;
 
+typedef struct
+{
+	Op *ops;
+	size_t size;
+} Ops;
+
+typedef struct
+{
+	size_t top;
+	size_t size;
+	int *data;
+} Stack;
+
+typedef struct
+{
+	const size_t static_link;
+	const size_t dynamic_link;
+	const size_t return_address;
+} Record;
+
 bool is_whitespace(char c)
 {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r';
 }
 
-bool is_blank_line(char *str)
+bool is_blank_line(const char *str)
 {
 	size_t len = strlen(str);
 	for (size_t i = 0; i < len; ++i)
@@ -44,22 +64,126 @@ bool is_blank_line(char *str)
 	return true;
 }
 
-Op parse_op(char *line)
+char *strdup_without_whitespace(const char *str)
 {
-	char *line_without_whitespace = (char *)malloc(strlen(line) + 1);
-	for (size_t i = 0, j = 0; i < strlen(line); i++)
+	char *without_whitespace = (char *)malloc(strlen(str) + 1);
+	for (size_t i = 0, j = 0; i <= strlen(str); i++)
 	{
-		if (!is_whitespace(line[i]))
+		if (!is_whitespace(str[i]))
 		{
-			line_without_whitespace[j] = line[i];
+			without_whitespace[j] = str[i];
 			j++;
 		}
 	}
+	return without_whitespace;
+}
 
+size_t count_lines(FILE *fp)
+{
+	size_t lines = 0;
+
+	int ch;
+	while ((ch = fgetc(fp)) != EOF)
+	{
+		if (ch == '\n')
+			lines++;
+	}
+	fseek(fp, 0, SEEK_SET);
+
+	return lines + 1; // The last line doesn't contain '\n'
+}
+
+Stack stack_new(void)
+{
+	Stack stack;
+	stack.top = 0;
+	stack.size = 0;
+	stack.data = (int *)malloc(0);
+	return stack;
+}
+
+void stack_free(Stack stack)
+{
+	free(stack.data);
+}
+
+void stack_allocate(Stack *stack, size_t size)
+{
+	stack->top += size;
+	stack->size += size;
+	stack->data = (int *)realloc(stack->data, stack->size * sizeof(int));
+}
+
+int stack_get(const Stack *stack, size_t at)
+{
+	if (at > stack->top)
+	{
+		fprintf(stderr, "Invalid memory address: %lu\n", at);
+		exit(EXIT_FAILURE);
+	}
+
+	return stack->data[at];
+}
+
+void stack_set(Stack *stack, size_t at, int value)
+{
+	if (at > stack->top)
+	{
+		fprintf(stderr, "Invalid memory address: %lu\n", at);
+		exit(EXIT_FAILURE);
+	}
+
+	stack->data[at] = value;
+}
+
+void stack_push(Stack *stack, int value)
+{
+	stack_allocate(stack, 1);
+	stack->data[stack->top - 1] = value;
+}
+
+int stack_pop(Stack *stack)
+{
+	int value = stack->data[stack->top - 1];
+	stack->top--;
+	return value;
+}
+
+Record get_record(const Stack *stack, size_t base_ptr)
+{
+	Record record = {
+		 .static_link = (size_t)stack_get(stack, base_ptr),
+		 .dynamic_link = (size_t)stack_get(stack, base_ptr + 1),
+		 .return_address = (size_t)stack_get(stack, base_ptr + 2),
+	};
+	return record;
+}
+
+size_t push_record(Stack *stack, Record record)
+{
+	size_t base = stack->top;
+	stack_push(stack, (int)record.static_link);
+	stack_push(stack, (int)record.dynamic_link);
+	stack_push(stack, (int)record.return_address);
+	return base;
+}
+
+void pop_record(Stack *stack, size_t *pc, size_t *bp)
+{
+	Record record = get_record(stack, *bp);
+	stack->top = *bp;
+	*bp = record.dynamic_link;
+	*pc = record.return_address;
+}
+
+Op parse_op(const char *line)
+{
 	Op op;
 	char op_name[4];
-	sscanf(line_without_whitespace, "(%[^,],%d,%d)", op_name, &op.opr1, &op.opr2);
-	free(line_without_whitespace);
+
+	char *op_str = strdup_without_whitespace(line);
+	sscanf(op_str, "(%[^,],%d,%d)", op_name, &op.opr1, &op.opr2);
+	free(op_str);
 
 	if (strcmp(op_name, "LOD") == 0 || strcmp(op_name, "lod") == 0)
 	{
@@ -108,111 +232,65 @@ Op parse_op(char *line)
 	else
 	{
 		fprintf(stderr, "Unknown op: %s\n", op_name);
-		exit(1);
+		exit(EXIT_FAILURE);
 	}
 
 	return op;
 }
 
-typedef struct
+Ops parse(FILE *fp)
 {
-	size_t top;
-	size_t size;
-	int *data;
-} Stack;
+	// Count lines in a file to determine allocation size of opcodes and labels
+	size_t lines_count = count_lines(fp);
 
-Stack stack_new(void)
-{
-	Stack stack;
-	stack.top = 0;
-	stack.size = 0;
-	stack.data = (int *)malloc(0);
-	return stack;
-}
+	// Labels: Mapping of operand values to instruction addresses
+	size_t *labels = (size_t *)malloc(lines_count * sizeof(size_t));
 
-void stack_free(Stack *stack)
-{
-	free(stack->data);
-	stack->data = NULL;
-}
+	// Opcodes: This is not shared with RAM. It can be considered as Harvard architecture.
+	Op *ops = (Op *)malloc(lines_count * sizeof(Op));
+	size_t ops_count = 0;
 
-void stack_allocate(Stack *stack, size_t size)
-{
-	stack->top += size;
-	stack->size += size;
-	stack->data = (int *)realloc(stack->data, stack->size * sizeof(int));
-}
-
-int stack_get(Stack *stack, size_t at)
-{
-	if (at > stack->top)
+	char line[20];
+	while (fgets(line, sizeof(line) / sizeof(char), fp) != NULL)
 	{
-		fprintf(stderr, "Invalid memory address: %lu\n", at);
-		exit(1);
+		// Don't parse when it is blank line
+		if (is_blank_line(line))
+		{
+			continue;
+		}
+
+		Op op = parse_op(line);
+
+		// Label maps an operand value (opr2) of a jump instruction
+		// to its own instruction address
+		if (op.kind == Op_Label)
+		{
+			labels[op.opr2] = ops_count;
+		}
+
+		ops[ops_count] = op;
+		ops_count++;
 	}
 
-	return stack->data[at];
-}
-
-void stack_set(Stack *stack, size_t at, int value)
-{
-	if (at > stack->top)
+	// Convert an operand value of a jump instruction
+	// to an corresponding instruction number.
+	for (size_t i = 0; i < ops_count; ++i)
 	{
-		fprintf(stderr, "Invalid memory address: %lu\n", at);
-		exit(1);
+		Op *op = &ops[i];
+		if (op->kind == Op_Jump || op->kind == Op_JumpZero || op->kind == Op_Call)
+		{
+			op->opr2 = (int)labels[op->opr2];
+		}
 	}
+	free(labels);
 
-	stack->data[at] = value;
-}
-
-void stack_push(Stack *stack, int value)
-{
-	stack_allocate(stack, 1);
-	stack->data[stack->top - 1] = value;
-}
-
-int stack_pop(Stack *stack)
-{
-	int value = stack->data[stack->top - 1];
-	stack->top--;
-	return value;
-}
-
-typedef struct
-{
-	size_t static_link;
-	size_t dynamic_link;
-	size_t return_address;
-} Record;
-
-Record get_record(Stack *stack, size_t base_ptr)
-{
-	Record record = {
-		 .static_link = (size_t)stack_get(stack, base_ptr),
-		 .dynamic_link = (size_t)stack_get(stack, base_ptr + 1),
-		 .return_address = (size_t)stack_get(stack, base_ptr + 2),
+	return (Ops){
+		 .ops = ops,
+		 .size = ops_count,
 	};
-	return record;
 }
 
-size_t push_record(Stack *stack, Record record)
-{
-	size_t base = stack->top;
-	stack_push(stack, (int)record.static_link);
-	stack_push(stack, (int)record.dynamic_link);
-	stack_push(stack, (int)record.return_address);
-	return base;
-}
-
-void pop_record(Stack *stack, size_t *pc, size_t *bp)
-{
-	Record record = get_record(stack, *bp);
-	stack->top = *bp;
-	*bp = record.dynamic_link;
-	*pc = record.return_address;
-}
-
-size_t base(Stack *stack, size_t base_ptr, size_t level_diff)
+size_t base(const Stack *stack, size_t base_ptr, size_t level_diff)
 {
 	if (level_diff == 0)
 	{
@@ -225,13 +303,13 @@ size_t base(Stack *stack, size_t base_ptr, size_t level_diff)
 	}
 }
 
-size_t value_at(Stack *stack, size_t base_ptr, size_t level_diff, int offset)
+size_t value_at(const Stack *stack, size_t base_ptr, size_t level_diff, int offset)
 {
 	size_t base_addr = base(stack, base_ptr, level_diff);
 	return (size_t)((int)base_addr + offset);
 }
 
-void run(Op *ops, size_t len)
+void run(Ops ops)
 {
 	Record initial_record = {
 		 .static_link = 0,
@@ -245,19 +323,19 @@ void run(Op *ops, size_t len)
 
 	while (stack.top != 0)
 	{
-		if (pc >= len)
+		if (pc >= ops.size)
 		{
 			fprintf(stderr, "PC out of bounds: %lu\n", pc);
-			exit(1);
+			exit(EXIT_FAILURE);
 		}
 
-		Op op = ops[pc];
+		Op op = ops.ops[pc];
 		switch (op.kind)
 		{
 		case Op_Invalid:
 		{
 			printf("Invalid op at memory %ld\n", pc);
-			exit(1);
+			exit(EXIT_FAILURE);
 			break;
 		}
 		case Op_Load:
@@ -368,7 +446,7 @@ void run(Op *ops, size_t len)
 			default:
 			{
 				fprintf(stderr, "Unknown opr2: %d\n", op.opr2);
-				exit(1);
+				exit(EXIT_FAILURE);
 			}
 			}
 			pc++;
@@ -460,22 +538,8 @@ void run(Op *ops, size_t len)
 		}
 	}
 
-	stack_free(&stack);
-}
-
-size_t count_lines(FILE *fp)
-{
-	size_t lines = 0;
-
-	int ch;
-	while ((ch = fgetc(fp)) != EOF)
-	{
-		if (ch == '\n')
-			lines++;
-	}
-	fseek(fp, 0, SEEK_SET);
-
-	return lines + 1; // The last line doesn't contain '\n'
+	stack_free(stack);
+	free(ops.ops);
 }
 
 int main(int argc, char **argv)
@@ -483,63 +547,19 @@ int main(int argc, char **argv)
 	if (argc != 2)
 	{
 		printf("Usage: %s <filename>\n", argv[0]);
-		return 1;
+		exit(EXIT_FAILURE);
 	}
 
 	FILE *fp = fopen(argv[1], "r");
 	if (fp == NULL)
 	{
 		printf("Error: cannot open file %s\n", argv[1]);
-		return 1;
+		exit(EXIT_FAILURE);
 	}
 
-	// Count lines in a file to determine allocation size of opcodes and labels
-	size_t lines_count = count_lines(fp);
-
-	// Labels: Mapping of operand values to instruction addresses
-	size_t *labels = (size_t *)malloc(lines_count * sizeof(size_t));
-
-	// Opcodes: This is not shared with RAM. It can be considered as Harvard architecture.
-	Op *opcodes = (Op *)malloc(lines_count * sizeof(Op));
-	size_t opcodes_count = 0;
-
-	char line[20];
-	while (fgets(line, sizeof(line) / sizeof(char), fp) != NULL)
-	{
-		// Don't parse when it is blank line
-		if (is_blank_line(line))
-		{
-			continue;
-		}
-
-		Op op = parse_op(line);
-
-		// Label maps an operand value (opr2) of a jump instruction
-		// to its own instruction address
-		if (op.kind == Op_Label)
-		{
-			labels[op.opr2] = opcodes_count;
-		}
-
-		opcodes[opcodes_count] = op;
-		opcodes_count++;
-	}
+	Ops ops = parse(fp);
 	fclose(fp);
 
-	// Convert an operand value of a jump instruction
-	// to an corresponding instruction number.
-	for (size_t i = 0; i < opcodes_count; ++i)
-	{
-		Op *op = &opcodes[i];
-		if (op->kind == Op_Jump || op->kind == Op_JumpZero || op->kind == Op_Call)
-		{
-			op->opr2 = (int)labels[op->opr2];
-		}
-	}
-	free(labels);
-
-	// RUN.
-	run(opcodes, opcodes_count);
-	free(opcodes);
-	return 0;
+	run(ops);
+	exit(EXIT_SUCCESS);
 }

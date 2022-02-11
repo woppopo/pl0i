@@ -1,3 +1,8 @@
 # pl0i
 
-PL/0 interpreter
+A PL/0 p-code interpreter.
+
+```
+$ make
+$ ./pl0i <input.pl0>
+```
